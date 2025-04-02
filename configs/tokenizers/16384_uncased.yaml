@@ -1,6 +1,6 @@
 text_path: notebooks/temp/all_data.txt
 vocab_size: 16384
-repo_id: iwslt25_uncased_nopunc_16384
+repo_id: iwslt25_uncased_16384
 push_to_hub: true
 case_standardization: lower
-remove_punctuation: true
+remove_punctuation: false
