@@ -1,0 +1,67 @@
+# Model configuration
+model:
+  name: "speech_transformer"
+  d_model: 512
+  n_heads: 8
+  d_ff: 2048
+  n_enc_layers: 6
+  n_dec_layers: 6
+  enc_attn_dropout: 0.1
+  dec_attn_dropout: 0.1
+  speech_embedding_type: "whisper"
+  ff_type: "swiglu"
+  pe_max_len: 4096
+  
+# Model checkpoint (optional)
+# model_checkpoint: "checkpoints/pretrained_model.pt"
+
+# Tokenizer path
+tokenizer: "alexgichamba/iwslt25_uncased_nopunc_4096"
+
+# Task configuration  
+task:
+  source_language: "bem"
+  target_language: "eng"
+
+# Audio configuration
+audio:
+  n_mels: 80
+  hop_length: 320
+  n_fft: 1280
+  sample_rate: 16000
+
+# Text configuration
+text:
+  case_standardization: "lower"
+
+# Training configuration
+training:
+  batch_size: 16
+  num_epochs: 5
+  learning_rate: 2.0e-4
+  weight_decay: 0.001
+  device: "cpu"
+  mixed_precision: true
+  num_workers: 4
+  scheduler: "CosineAnnealingWarmupRestarts"
+  warmup_steps: 100
+  min_lr: 1.0e-6
+  label_smoothing: 0.1
+  ctcloss_weight: 0.3
+  max_decoding_length: 256
+
+# Data configuration
+data:
+  root: "corpus"
+  audio_root: "corpus/audio"
+
+# Logging configuration
+logging:
+  log_interval: 100
+  wandb: true
+  wandb_project: "e2e_st"
+  wandb_run_name: "bem_eng_small_4096"
+
+# Output configuration
+output:
+  dir: "output/bem_eng_small_4096"

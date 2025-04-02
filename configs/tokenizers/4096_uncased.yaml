@@ -1,0 +1,6 @@
+text_path: notebooks/temp/all_data.txt
+vocab_size: 4096
+repo_id: iwslt25_uncased_nopunc_4096
+push_to_hub: true
+case_standardization: lower
+remove_punctuation: true
