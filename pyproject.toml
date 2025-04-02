@@ -16,5 +16,12 @@ dependencies = [
     "tqdm==4.67.1"
 ]
 
+[project.optional-dependencies]
+notebooks = [
+    "ipykernel",
+    "jupyter",
+    "notebook"
+]
+
 [tool.setuptools.packages.find]
 include = ["e2e_st"]
