@@ -1,11 +1,11 @@
 # Model configuration
 model:
-  name: "small"
-  d_model: 768
-  n_heads: 12
-  d_ff: 3072
-  n_enc_layers: 12
-  n_dec_layers: 12
+  name: "base"
+  d_model: 512
+  n_heads: 8
+  d_ff: 2048
+  n_enc_layers: 6
+  n_dec_layers: 6
   enc_attn_dropout: 0.1
   dec_attn_dropout: 0.1
   speech_embedding_type: "whisper"
@@ -19,9 +19,12 @@ model:
 tokenizer: "alexgichamba/iwslt25_uncased_4096"
 
 # Task configuration  
-task:
-  source_language: "bem"
-  target_language: "eng"
+language_pairs:
+  - source: bem
+    target: eng
+  - source: fon
+    target: fra
+  
 
 # Audio configuration
 audio:
@@ -37,6 +40,7 @@ text:
 # Training configuration
 training:
   batch_size: 16
+  validation_batch_size: 64
   num_epochs: 5
   learning_rate: 2.0e-4
   weight_decay: 0.001

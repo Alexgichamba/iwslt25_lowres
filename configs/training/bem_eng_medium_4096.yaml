@@ -1,11 +1,11 @@
 # Model configuration
 model:
-  name: "small"
-  d_model: 768
-  n_heads: 12
-  d_ff: 3072
-  n_enc_layers: 12
-  n_dec_layers: 12
+  name: "medium"
+  d_model: 1024
+  n_heads: 16
+  d_ff: 4096
+  n_enc_layers: 24
+  n_dec_layers: 24
   enc_attn_dropout: 0.1
   dec_attn_dropout: 0.1
   speech_embedding_type: "whisper"
