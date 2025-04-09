@@ -28,16 +28,12 @@ class TranscriptionPreprocessor(AbstractTextPreprocessor):
 class TranslationPreprocessor(AbstractTextPreprocessor):
     def __init__(self,
                  case_standardization: Literal["lower", "upper"] = None,
-                 source_language: Literal["bem", "eng", "fr", "fon"] = "eng",
-                 target_language: Literal["bem", "eng", "fr", "fon"] = "eng",
                  tokenizer: CustomTokenizer = None):
         
         self.case_standardization = case_standardization
-        self.source_language = source_language
-        self.target_language = target_language
         self.tokenizer = tokenizer
 
-    def __call__(self, transcription: str, translation: str):
+    def __call__(self, transcription: str, translation: str, source_language: str, target_language: str):
         if self.case_standardization == "lower":
             transcription = transcription.lower()
             translation = translation.lower()
@@ -48,8 +44,8 @@ class TranslationPreprocessor(AbstractTextPreprocessor):
         start_token = [self.tokenizer.bos_token_id]
         end_token = [self.tokenizer.eos_token_id]
         detect_lang_token = [self.tokenizer.detect_lang_token_id]
-        source_lang_token = [getattr(self.tokenizer, f"{self.source_language}_lang_token_id")]
-        target_lang_token = [getattr(self.tokenizer, f"{self.target_language}_lang_token_id")]
+        source_lang_token = [getattr(self.tokenizer, f"{source_language}_lang_token_id")]
+        target_lang_token = [getattr(self.tokenizer, f"{target_language}_lang_token_id")]
 
         transcription_tokens = self.tokenizer.encode(transcription)
         translation_tokens = self.tokenizer.encode(translation)
