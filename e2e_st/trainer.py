@@ -13,7 +13,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.amp import autocast, GradScaler
 from e2e_st.model.transformer import Transformer
 from e2e_st.audio.audio_preprocessor import LogMelSpec
-from e2e_st.text.text_preprocessor import TranscriptionPreprocessor, TranslationPreprocessor
+from e2e_st.text.text_preprocessor import TranslationPreprocessor
 from e2e_st.text.tokenizer import CustomTokenizer
 from transformers import AutoTokenizer
 from e2e_st.inference import GreedyDecoding
@@ -32,12 +32,8 @@ class STDataset(Dataset):
     def __init__(
         self,
         dataset_json: str,
-        audio_base_path: str,
-        model: Transformer,
         tokenizer: CustomTokenizer,
         spec_config: SpecConfig,
-        source_language: str = None,
-        target_language: str = None,
         case_standardization: str = None,
 
     ):
@@ -48,28 +44,17 @@ class STDataset(Dataset):
         ----------
         dataset_json : str
             Path to the dataset JSON file containing audio and text mappings
-        audio_base_path : str
-            Absolute path for the directory containing audio files
-        model : Transformer
-            The transformer model to be used
         tokenizer : CustomTokenizer
             The tokenizer to be used for text processing
         spec_config : SpecConfig
             Configuration for the spectrogram
-        source_language : str
-            Source language for translation task
-        target_language : str
-            Target language for translation task
         case_standardization : str
             Case standardization for text processing
         """
-        self.model = model
 
         # Create tokenizer
         self.tokenizer = tokenizer
-        
-        self.source_language = source_language
-        self.target_language = target_language
+
         self.spectogram = LogMelSpec(
                                     n_mels=spec_config.n_mels,
                                     hop_length=spec_config.hop_length,
@@ -77,42 +62,40 @@ class STDataset(Dataset):
                                     sample_rate=spec_config.sample_rate
                                     )
         self.text_preprocessor = TranslationPreprocessor(
-            source_language=source_language,
-            target_language=target_language,
             tokenizer=tokenizer,
             case_standardization=case_standardization
         )
 
-        # Read json file
+        # Read the json file
         with open(dataset_json, 'r') as f:
             dataset = json.load(f)
         
-        # Create a mapping of audio IDs, audio paths, transcripts and translations
+        # Create a mapping of audio paths, transcripts and translations
         self.samples = []
-        for i, item in enumerate(dataset):
-            # Extract the audio filename as ID and path
-            audio_id = f"{source_language}_{i}".split(".")[0]
-            audio_path = os.path.join(audio_base_path, item["audio_path"])
-            
-            # Get transcript and translation from the json
-            transcript = item[f"{source_language}_transcript"]
-            translation = item[f"{target_language}_translation"]
-            
-            # Add the tuple to samples
-            self.samples.append((audio_id, audio_path, transcript, translation))
+        for item in dataset:
+            audio_path = item["audio_path"]
+            transcript = item["transcript"]
+            translation = item["translation"]
+            source_language = item["source_language"]
+            target_language = item["target_language"]
+            self.samples.append((audio_path, transcript, translation, source_language, target_language))
             
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        _, audio_path, transcript, translation = self.samples[idx]
+        audio_path, transcript, translation, source_language, target_language = self.samples[idx]
         
         # Load and preprocess audio
         mel = self.spectogram(audio_path)
         
         # Get the input and target tokens
-        input_tokens, st_target_tokens, asr_target_tokens = self.text_preprocessor(transcript, translation)
+        input_tokens, st_target_tokens, asr_target_tokens = self.text_preprocessor(transcription=transcript,
+                                                                                  translation=translation,
+                                                                                  source_language=source_language,
+                                                                                  target_language=target_language
+                                                                                  )
         # Convert to tensors
         input_tokens = torch.tensor(input_tokens, dtype=torch.long)
         st_target_tokens = torch.tensor(st_target_tokens, dtype=torch.long)
@@ -138,7 +121,7 @@ class STDataset(Dataset):
         
         mels = torch.stack(mels)
         speech_lengths = torch.tensor([mel.size(1) for mel in mels], dtype=torch.long)
-        text_lengths = torch.tensor([len(tokens) for tokens in input_tokens], dtype=torch.long)
+        asr_text_lengths = torch.tensor([len(tokens) for tokens in asr_target_tokens], dtype=torch.long)
         
         # Pad token sequences
         input_tokens = pad_sequence(input_tokens, batch_first=True, padding_value=self.tokenizer.pad_token_id)
@@ -148,7 +131,7 @@ class STDataset(Dataset):
         return {
             "mel": mels,
             "speech_lengths": speech_lengths,
-            "text_lengths": text_lengths,
+            "text_lengths": asr_text_lengths,
             "input_tokens": input_tokens,
             "st_target_tokens": st_target_tokens,
             "asr_target_tokens": asr_target_tokens
@@ -160,7 +143,6 @@ class STTrainer:
         model: Transformer,
         tokenizer: CustomTokenizer,
         optimizer: torch.optim.Optimizer,
-        target_lang_id: int,
         lr_scheduler: torch.optim.lr_scheduler._LRScheduler,
         label_smoothing: float = 0.0,
         device="cuda" if torch.cuda.is_available() else "cpu",
@@ -179,8 +161,6 @@ class STTrainer:
             The tokenizer to be used for text processing
         optimizer : torch.optim.Optimizer
             Optimizer to use for training
-        target_lang_id : int
-            Target language ID token
         label_smoothing : float
             Label smoothing factor (default: 0.0)
         lr_scheduler : 
@@ -205,7 +185,6 @@ class STTrainer:
         self.cross_entropy_loss = torch.nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id, 
                                                             label_smoothing=label_smoothing)
 
-        self.target_lang_id = target_lang_id
         self.max_decoding_length = max_decoding_length
         
         # Mixed precision settings
@@ -283,24 +262,25 @@ class STTrainer:
     
     def validate(self, dataloader):
         """
-        Validate the model on validation data.
+        Validate the model on validation data using batched processing.
         
         Parameters
         ----------
         dataloader : DataLoader
             DataLoader for validation data
-            
+                
         Returns
         -------
         metrics : dict
             Dictionary of validation metrics (wer, cer, bleu, chrF++)
         """
         self.model.eval()
-        total_wer = 0
-        total_cer = 0
-        total_bleu = 0
-        total_chrf = 0
-        batch_count = 0
+        
+        # Collect all predictions and targets, but process in batches
+        all_st_preds = []
+        all_st_targets = []
+        all_asr_preds = []
+        all_asr_targets = []
         
         with torch.no_grad():
             for batch in dataloader:
@@ -310,7 +290,6 @@ class STTrainer:
                 speech_lengths = batch["speech_lengths"].to(self.device)
                 
                 batch_size = mel.size(0)
-                batch_count += 1
                 
                 # Mixed precision evaluation
                 with autocast(enabled=self.use_mixed_precision, device_type="cuda"):
@@ -321,44 +300,36 @@ class STTrainer:
                                         max_length=self.max_decoding_length)
                 
                 # Process target sequences properly (batch as a whole)
-                st_targets = []
-                asr_targets = []
-                
                 for i in range(batch_size):
                     # ST target
                     st_tgt = st_target_tokens[i]
                     st_tgt = st_tgt[st_tgt != self.tokenizer.pad_token_id]
                     st_tgt = st_tgt[st_tgt != self.tokenizer.eos_token_id]
-                    st_targets.append(self.tokenizer.decode(st_tgt.tolist()))
+                    all_st_targets.append(self.tokenizer.decode(st_tgt.tolist()))
                     
                     # ASR target
                     asr_tgt = asr_target_tokens[i]
                     asr_tgt = asr_tgt[asr_tgt != self.tokenizer.pad_token_id]
-                    asr_targets.append(self.tokenizer.decode(asr_tgt.tolist()))
+                    all_asr_targets.append(self.tokenizer.decode(asr_tgt.tolist()))
                 
-                # Compute metrics for this batch
-                metrics = metrics.compute_metrics(st_target=st_targets,
-                                        asr_target=asr_targets,
-                                        st_pred=results["st_preds"],
-                                        asr_pred=results["asr_preds"])
-                
-                # Accumulate batch-total metrics
-                total_wer += metrics["wer"]
-                total_cer += metrics["cer"] 
-                total_bleu += metrics["bleu"]
-                total_chrf += metrics["chrf"]
-                
-                del batch
-            torch.cuda.empty_cache()
-            gc.collect()
+                # Add predictions for this batch
+                all_st_preds.extend(results["st_preds"])
+                all_asr_preds.extend(results["asr_preds"])
+
+                # Free memory after processing each batch
+                del mel, st_target_tokens, speech_lengths, results, batch
+                torch.cuda.empty_cache()
         
-        # Calculate overall averages across batches
-        return {
-            "wer": total_wer / batch_count,
-            "cer": total_cer / batch_count,
-            "bleu": total_bleu / batch_count,
-            "chrf": total_chrf / batch_count,
-        }
+        corpus_metrics = metrics.compute_metrics(
+            st_target=all_st_targets,
+            asr_target=all_asr_targets,
+            st_pred=all_st_preds,
+            asr_pred=all_asr_preds,
+            corpus_level=True  # Get true corpus-level metrics
+        )
+        
+        gc.collect()
+        return corpus_metrics
     
     def train(self, train_dataloader, val_dataloader, num_epochs, log_interval=10, use_wandb=False, output_dir="output"):
         """
@@ -485,8 +456,10 @@ def train_from_config(config, model, tokenizer):
     val_json = f"{data_root}/val/val.json"
     
     # Task settings
-    source_language = config['task']['source_language']
-    target_language = config['task']['target_language']
+    language_pairs = config['data']['language_pairs']
+    source_languages = [pair['source'] for pair in language_pairs]
+    target_languages = [pair['target'] for pair in language_pairs]
+  
     
     # Training settings
     batch_size = config['training']['batch_size']
@@ -515,10 +488,15 @@ def train_from_config(config, model, tokenizer):
             tags=wandb_tags,
             config={
                 'model': config['model']['name'],
-                'source_language': source_language,
-                'target_language': target_language,
+                'source_languages': source_languages,
+                'target_languages': target_languages,
                 'batch_size': batch_size,
                 'learning_rate': learning_rate,
+                'tokenizer': config['text'].get('tokenizer', "alexgichamba/iwslt25_lowres_uncased_4096"),
+                'ff_type': config['model'].get('ff_type', 'linear'),
+                'scheduler': config['training'].get('scheduler', 'CosineAnnealingWarmupRestarts'),
+                'ctcloss_weight': config['training'].get('ctcloss_weight', 0.0),
+                'learning_rate': learning_rate
             }
         )
     
@@ -542,11 +520,8 @@ def train_from_config(config, model, tokenizer):
     # Create datasets
     train_dataset = STDataset(dataset_json=train_json,
                               audio_base_path=audio_base_path,
-                              model=model,
                               tokenizer=tokenizer,
                               spec_config=spec_config,
-                              source_language=source_language,
-                              target_language=target_language,
                               case_standardization=case_standardization
                               )
     
@@ -561,11 +536,8 @@ def train_from_config(config, model, tokenizer):
     
     val_dataset = STDataset(dataset_json=val_json,
                               audio_base_path=audio_base_path,
-                              model=model,
                               tokenizer=tokenizer,
                               spec_config=spec_config,
-                              source_language=source_language,
-                              target_language=target_language,
                               case_standardization=case_standardization
                               )
     
@@ -616,7 +588,6 @@ def train_from_config(config, model, tokenizer):
         model=model,
         tokenizer=tokenizer,
         optimizer=optimizer,
-        target_lang_id=tokenizer.lang2id[target_language],
         lr_scheduler=lr_scheduler,
         label_smoothing=config['training'].get('label_smoothing', 0.1),
         device=device,
