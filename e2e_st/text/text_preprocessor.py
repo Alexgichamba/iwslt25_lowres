@@ -17,9 +17,9 @@ class TranscriptionPreprocessor(AbstractTextPreprocessor):
 
     def __call__(self, text: str):
         if self.case_standardization == "lower":
-            text = text.lower()
+            text = text.lower().strip()
         elif self.case_standardization == "upper":
-            text = text.upper()
+            text = text.upper().strip()
 
         text_tokens = self.tokenizer.encode(text)
 
@@ -35,11 +35,11 @@ class TranslationPreprocessor(AbstractTextPreprocessor):
 
     def __call__(self, transcription: str, translation: str, source_language: str, target_language: str):
         if self.case_standardization == "lower":
-            transcription = transcription.lower()
-            translation = translation.lower()
+            transcription = transcription.lower().strip()
+            translation = translation.lower().strip()
         elif self.case_standardization == "upper":
-            transcription = transcription.upper()
-            translation = translation.upper()
+            transcription = transcription.upper().strip()
+            translation = translation.upper().strip()
 
         start_token = [self.tokenizer.bos_token_id]
         end_token = [self.tokenizer.eos_token_id]

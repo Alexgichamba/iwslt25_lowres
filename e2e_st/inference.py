@@ -2,14 +2,14 @@ import torch
 import torch.nn.functional as F
 from abc import ABC, abstractmethod
 from e2e_st.model.transformer import Transformer
-from e2e_st.text.tokenizer import Tokenizer
+from e2e_st.text.tokenizer import CustomTokenizer
 from typing import Optional
 from torchaudio.models.decoder import cuda_ctc_decoder
 from torch.nn.utils.rnn import pad_sequence
 from typing import Dict, List
 
 class AbstractDecoding(ABC):
-    def __init__(self, tokenizer: Tokenizer, ctc_beam_size: int = 5):
+    def __init__(self, tokenizer: CustomTokenizer, ctc_beam_size: int = 5):
         self.tokenizer = tokenizer
         self.ctc_beam_size = ctc_beam_size
 
@@ -24,7 +24,7 @@ class AbstractDecoding(ABC):
         pass
 
 class GreedyDecoding(AbstractDecoding):
-    def __init__(self, tokenizer: Tokenizer, ctc_beam_size: int = 5):
+    def __init__(self, tokenizer: CustomTokenizer, ctc_beam_size: int = 5):
         super().__init__(tokenizer, ctc_beam_size)
         self.ctc_beam_size = ctc_beam_size
         self.ctc_decoder = cuda_ctc_decoder(

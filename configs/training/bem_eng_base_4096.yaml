@@ -11,6 +11,7 @@ model:
   speech_embedding_type: "whisper"
   ff_type: "swiglu"
   pe_max_len: 4096
+  vocab_size: 4096
   
 # Model checkpoint (optional)
 # model_checkpoint: "checkpoints/pretrained_model.pt"
@@ -24,7 +25,6 @@ language_pairs:
     target: eng
   - source: fon
     target: fra
-  
 
 # Audio configuration
 audio:

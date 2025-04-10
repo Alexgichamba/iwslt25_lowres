@@ -73,11 +73,12 @@ class STDataset(Dataset):
         # Create a mapping of audio paths, transcripts and translations
         self.samples = []
         for item in dataset:
-            audio_path = item["audio_path"]
-            transcript = item["transcript"]
-            translation = item["translation"]
-            source_language = item["source_language"]
-            target_language = item["target_language"]
+            entry = dataset[item]
+            audio_path = entry["audio_path"]
+            transcript = entry["transcript"]
+            translation = entry["translation"]
+            source_language = entry["source_language"]
+            target_language = entry["target_language"]
             self.samples.append((audio_path, transcript, translation, source_language, target_language))
             
 
@@ -114,16 +115,16 @@ class STDataset(Dataset):
         Collate function for the DataLoader.
         Pads sequences in the batch to the same length.
         """
-        mels = [item["mel"] for item in batch] # (n_mels, T)
+        mels = [item["mel"].T for item in batch] # (T, n_mels)
         input_tokens = [item["input_tokens"] for item in batch] # (n_tokens,)
         st_target_tokens = [item["st_target_tokens"] for item in batch] # (n_tokens,)
         asr_target_tokens = [item["asr_target_tokens"] for item in batch] # (n_tokens,)
-        
-        mels = torch.stack(mels)
-        speech_lengths = torch.tensor([mel.size(1) for mel in mels], dtype=torch.long)
+
+        speech_lengths = torch.tensor([mel.size(0) for mel in mels], dtype=torch.long)
         asr_text_lengths = torch.tensor([len(tokens) for tokens in asr_target_tokens], dtype=torch.long)
         
         # Pad token sequences
+        mels = pad_sequence(mels, batch_first=True, padding_value=0) # (B, T, n_mels)
         input_tokens = pad_sequence(input_tokens, batch_first=True, padding_value=self.tokenizer.pad_token_id)
         st_target_tokens = pad_sequence(st_target_tokens, batch_first=True, padding_value=self.tokenizer.pad_token_id)
         asr_target_tokens = pad_sequence(asr_target_tokens, batch_first=True, padding_value=self.tokenizer.pad_token_id)
@@ -456,7 +457,7 @@ def train_from_config(config, model, tokenizer):
     val_json = f"{data_root}/val/val.json"
     
     # Task settings
-    language_pairs = config['data']['language_pairs']
+    language_pairs = config['language_pairs']
     source_languages = [pair['source'] for pair in language_pairs]
     target_languages = [pair['target'] for pair in language_pairs]
   
@@ -623,18 +624,14 @@ def train_from_config(config, model, tokenizer):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a Speech Translation model")
     parser.add_argument("--config", type=str, required=True, help="Path to the config file")
-    parser.add_argument("--output_dir", type=str, help="Directory to save the output (overrides config)")
     args = parser.parse_args()
     
     # Initialize model, get model config and full config
     model, model_config, full_config = load_or_create_model(args.config)
-    
-    # Update output directory if specified
-    if args.output_dir:
-        full_config['output']['dir'] = args.output_dir
-    
+    print(model)
     AutoTokenizer.register("custom", None, CustomTokenizer)
-    tokenizer_name = full_config['text'].get('tokenizer', "alexgichamba/iwslt25_lowres_uncased_4096")
+    tokenizer_name = full_config.get('tokenizer', "alexgichamba/iwslt25_uncased_4096")
+    print(f"Loading tokenizer: {tokenizer_name}")
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
     
     # Set vocab size in the model if necessary
@@ -648,7 +645,7 @@ if __name__ == "__main__":
     
     # Log model info
     print(f"Model configuration: {model_config.to_dict()}")
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)} trainable parameters")
+    print(f"Model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M")
     
     # Train the model
     history = train_from_config(full_config, model, tokenizer)

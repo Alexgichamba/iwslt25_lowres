@@ -5,8 +5,7 @@ import math
 from abc import ABC, abstractmethod
 from typing import Dict, Literal, Optional, Tuple
 from e2e_st.model.speech_embedding import WhisperSpeechEmbedding, SpeechTransformerSpeechEmbedding
-from e2e_st.model import attention_masks
-from e2e_st.inference import GreedyDecoding
+from e2e_st.utils.attention_masks import key_padding_mask, causal_mask
 
 class PositionalEncoding(nn.Module):
     """
@@ -356,7 +355,7 @@ class Encoder(nn.Module):
         # positional encoding
         x = self.positional_encoding(x)
         # generate padding mask
-        pad_mask = attention_masks.key_padding_mask(x, x_lengths).to(self.device)
+        pad_mask = key_padding_mask(x, x_lengths).to(self.device)
         # attention weights will be stores in a dictionary where the key is the layer number
         attn_weights = {}
         # iterate over each encoder layer
@@ -529,10 +528,10 @@ class Decoder(nn.Module):
         # positional encoding
         x = self.positional_encoding(x, offset=0)
         # generate padding mask
-        dec_pad_mask = attention_masks.key_padding_mask(x, pad_idx=padding_idx).to(self.device)
-        enc_pad_mask = attention_masks.key_padding_mask(enc_output, enc_output_lengths).to(self.device)
+        dec_pad_mask = key_padding_mask(x, pad_idx=padding_idx).to(self.device)
+        enc_pad_mask = key_padding_mask(enc_output, enc_output_lengths).to(self.device)
         # generate causal attention mask
-        causal_attn_mask = attention_masks.causal_mask(x).to(self.device)
+        causal_attn_mask = causal_mask(x).to(self.device)
         # attention weights will be stored in a dictionary where the key is the layer number
         self_attn_weights = {}
         cross_attn_weights = {}

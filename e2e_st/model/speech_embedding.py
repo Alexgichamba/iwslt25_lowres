@@ -19,7 +19,6 @@ class WhisperSpeechEmbedding(AbstractSpeechEmbedding):
     https://cdn.openai.com/papers/whisper.pdf
     """
     def __init__(self, in_channels:int, out_channels: int, strides: List[int] = [1, 2]):
-        super().__init__()
         self.conv1 = nn.Conv1d(in_channels=in_channels, out_channels=out_channels, kernel_size=3, stride=strides[0], padding=1)
         self.conv2 = nn.Conv1d(in_channels=out_channels, out_channels=out_channels, kernel_size=3, stride=strides[1], padding=1)
         self.gelu1 = nn.GELU()
@@ -48,6 +47,9 @@ class WhisperSpeechEmbedding(AbstractSpeechEmbedding):
             adjusted_lengths = torch.clamp(adjusted_lengths, max=x.size(-1))
         
         return x, adjusted_lengths
+    
+    def __call__(self, speech: torch.Tensor, speech_lengths: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.forward(speech, speech_lengths)
 
 class SpeechTransformerSpeechEmbedding(AbstractSpeechEmbedding):
     """"
@@ -101,3 +103,6 @@ class SpeechTransformerSpeechEmbedding(AbstractSpeechEmbedding):
             adjusted_lengths = torch.clamp(adjusted_lengths, max=new_frames)
         
         return x, adjusted_lengths
+    
+    def __call__(self, speech: torch.Tensor, speech_lengths: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.forward(speech, speech_lengths)
