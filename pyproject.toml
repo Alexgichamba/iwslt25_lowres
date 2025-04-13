@@ -14,15 +14,17 @@ dependencies = [
     "pyyaml==6.0.2",
     "wandb==0.19.9",
     "tqdm==4.67.1",
+    "soundfile-0.13.1"
 ]
 
 [project.optional-dependencies]
-notebooks = [
+notebook = [
     "ipykernel",
     "jupyter",
     "notebook",
     "wget",
-    "pandas"
+    "pandas",
+    "matplotlib"
 ]
 
 [tool.setuptools.packages.find]

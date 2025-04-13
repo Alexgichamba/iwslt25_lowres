@@ -27,8 +27,12 @@ def key_padding_mask(padded_input: torch.Tensor,
         for i in range(N):
             mask[i, :input_lengths[i]] = False       # Set non-padding positions to False
     else:
-        mask = (padded_input.squeeze(-1) == pad_idx)
-
+        # For pad_idx method, ensure we're operating on a 2D view of the data
+        if padded_input.dim() > 2:
+            # If tensor has more than 2 dimensions, we only care about the first token dimension
+            mask = (padded_input[:,:,0] == pad_idx)
+        else:
+            mask = (padded_input == pad_idx)
     return mask
 
 

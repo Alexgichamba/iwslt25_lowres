@@ -29,10 +29,12 @@ class TransformerConfig:
     pe_max_len: int = 3000
     
     # Tokenizer related
-    padding_idx: int = 2
+    padding_idx: int = 3
     
     # Training settings
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype: str = "float32"  # Can be 'float32' or 'float16'
+    use_sdpa: bool = False
     average_attn_weights: bool = True
     
     def __post_init__(self):
@@ -56,7 +58,8 @@ class TransformerConfig:
             pe_max_len=self.pe_max_len,
             padding_idx=self.padding_idx,
             device=self.device,
-            average_attn_weights=self.average_attn_weights
+            average_attn_weights=self.average_attn_weights,
+            dtype=self.dtype
         )
     
     @classmethod
@@ -65,6 +68,16 @@ class TransformerConfig:
         # Filter out keys that aren't part of the dataclass
         valid_keys = {f.name for f in fields(cls)}
         filtered_dict = {k: v for k, v in config_dict.items() if k in valid_keys}
+        # Handle dtype conversion
+        if 'dtype' in filtered_dict:
+            dtype_str = filtered_dict['dtype']
+            if dtype_str == 'float32':
+                filtered_dict['dtype'] = torch.float32
+            elif dtype_str == 'float16':
+                filtered_dict['dtype'] = torch.float16
+            else:
+                raise ValueError(f"Unsupported dtype: {dtype_str}")
+        print(filtered_dict)
         return cls(**filtered_dict)
     
     @classmethod
@@ -79,7 +92,6 @@ class TransformerConfig:
             model_config = config_dict['model']
         else:
             model_config = config_dict
-        
         return cls.from_dict(model_config)
     
     def to_dict(self) -> Dict[str, Any]:

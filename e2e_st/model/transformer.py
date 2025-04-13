@@ -320,13 +320,15 @@ class Encoder(nn.Module):
                  speech_embedding_type: Literal["whisper", "speech_transformer"],
                  ff_type: Literal["transformer", "swiglu"],
                  pe_max_len: int,
-                 device: torch.device):
+                 device: torch.device,
+                 dtype: torch.dtype,
+                 use_sdpa: bool = True):
         super().__init__()
         
         if speech_embedding_type == "whisper":
-            self.speech_embedding = WhisperSpeechEmbedding(in_channels=in_channels, out_channels=d_model)
+            self.speech_embedding = WhisperSpeechEmbedding(in_channels=in_channels, out_channels=d_model, dtype=dtype, device=device)
         elif speech_embedding_type == "speech_transformer":
-            self.speech_embedding = SpeechTransformerSpeechEmbedding(out_channels=d_model)
+            self.speech_embedding = SpeechTransformerSpeechEmbedding(out_channels=d_model, dtype=dtype, device=device)
         
         self.positional_encoding = PositionalEncoding(d_model=d_model, max_len=pe_max_len)
 
@@ -334,7 +336,8 @@ class Encoder(nn.Module):
                                                                 n_heads=n_heads,
                                                                 d_ff=d_ff,
                                                                 attn_dropout=attn_dropout,
-                                                                ff=ff_type) for _ in range(n_layers)])
+                                                                ff=ff_type,
+                                                                use_sdpa=use_sdpa) for _ in range(n_layers)])
 
         self.post_norm = nn.LayerNorm(d_model)
         self.device = device
@@ -352,6 +355,8 @@ class Encoder(nn.Module):
         
         # speech embedding
         x, x_lengths = self.speech_embedding(x, x_lengths)
+        # permute to (N, T, d_model)
+        x = x.permute(0, 2, 1)
         # positional encoding
         x = self.positional_encoding(x)
         # generate padding mask
@@ -489,7 +494,8 @@ class Decoder(nn.Module):
                  ff: Literal["transformer", "swiglu"],
                  pe_max_len: int,
                  padding_idx: int,
-                 device: torch.device):
+                 device: torch.device,
+                 use_sdpa: bool = True):
         super().__init__()
 
         self.positional_encoding = PositionalEncoding(d_model=d_model, max_len=pe_max_len)
@@ -498,7 +504,8 @@ class Decoder(nn.Module):
                                                                 n_heads=n_heads,
                                                                 d_ff=d_ff,
                                                                 attn_dropout=attn_dropout,
-                                                                ff=ff) for _ in range(n_layers)])
+                                                                ff=ff, use_sdpa=use_sdpa)
+                                                                for _ in range(n_layers)])
 
         self.post_norm = nn.LayerNorm(d_model)
         self.device = device
@@ -507,7 +514,7 @@ class Decoder(nn.Module):
                 x: torch.Tensor,
                 enc_output: torch.Tensor,
                 enc_output_lengths: Optional[torch.Tensor] = None,
-                padding_idx: Optional[int] = 2,
+                padding_idx: Optional[int] = 3,
                 average_attn_weights: bool = True,
                 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[int, torch.Tensor]]:
         """
@@ -571,7 +578,9 @@ class Transformer(nn.Module):
                  pe_max_len: int,
                  padding_idx: int,
                  device: torch.device,
-                 average_attn_weights: bool = True):
+                 dtype: torch.dtype,
+                 average_attn_weights: bool = True,
+                 use_sdpa: bool = True):
         super().__init__()
 
         self.encoder = Encoder(d_model=d_model,
@@ -583,7 +592,9 @@ class Transformer(nn.Module):
                                speech_embedding_type=speech_embedding_type,
                                ff_type=ff_type,
                                pe_max_len=pe_max_len,
-                               device=device)
+                               device=device,
+                               dtype=dtype,
+                               use_sdpa=use_sdpa)
 
         self.decoder = Decoder(d_model=d_model,
                                n_heads=n_heads,
@@ -594,11 +605,13 @@ class Transformer(nn.Module):
                                ff=ff_type,
                                pe_max_len=pe_max_len,
                                padding_idx=padding_idx,
-                               device=device)
+                               device=device,
+                               use_sdpa=use_sdpa)
 
         self.ctc_head = CTCHead(d_model=d_model, vocab_size=vocab_size)
         self.padding_idx = padding_idx
         self.average_attn_weights = average_attn_weights
+        self.device = device
 
     def forward(self,
                 speech_input: torch.Tensor,
@@ -659,7 +672,7 @@ class Transformer(nn.Module):
                 x: torch.Tensor,
                 enc_output: torch.Tensor,
                 enc_output_lengths: Optional[torch.Tensor] = None,
-                padding_idx: Optional[int] = 2,
+                padding_idx: Optional[int] = 3,
                 average_attn_weights: bool = True
                 ) -> Tuple[torch.Tensor, Dict[int, torch.Tensor], Dict[int, torch.Tensor]]:
         """

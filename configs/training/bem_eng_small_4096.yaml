@@ -10,8 +10,9 @@ model:
   dec_attn_dropout: 0.1
   speech_embedding_type: "whisper"
   ff_type: "swiglu"
-  pe_max_len: 4096
+  pe_max_len: 16384
   vocab_size: 4096
+  dtype: "float16"
   
 # Model checkpoint (optional)
 # model_checkpoint: "checkpoints/pretrained_model.pt"
@@ -44,15 +45,18 @@ text:
 
 # Training configuration
 training:
-  batch_size: 16
+  batch_duration: 1800
+  bucket_length_multiplier: 1.6
+  validation_batch_size: 64
   num_epochs: 5
   learning_rate: 2.0e-4
   weight_decay: 0.001
-  device: "cpu"
+  device: "cuda"
   mixed_precision: true
   num_workers: 4
   scheduler: "CosineAnnealingWarmupRestarts"
   warmup_steps: 100
+  cycle_length: 2 # epochs
   min_lr: 1.0e-6
   label_smoothing: 0.1
   ctcloss_weight: 0.3
@@ -60,8 +64,8 @@ training:
 
 # Data configuration
 data:
-  root: "corpus"
-  audio_root: "corpus/audio"
+  root: "corpora"
+  audio_root: "corpora/audio"
 
 # Logging configuration
 logging:

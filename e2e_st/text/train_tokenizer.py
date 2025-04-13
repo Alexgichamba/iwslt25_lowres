@@ -62,6 +62,7 @@ def main():
     
     # Define all special tokens - hardcoded, not from config
     special_tokens = [
+        "<|blank|>", # blank
         "<|sot|>",  # bos
         "<|eot|>",  # eos
         "<|pad|>",  # pad
@@ -70,8 +71,7 @@ def main():
         "<|bem|>",  # bem_lang
         "<|eng|>",  # eng_lang
         "<|fra|>",  # fra_lang
-        "<|fon|>",  # fon_lang
-        "<|blank|>" # blank
+        "<|fon|>"   # fon_lang
     ]
     
     # Create tokenizer backend
@@ -96,11 +96,11 @@ def main():
     # Create your custom tokenizer with the trained backend
     tokenizer = CustomTokenizer(
         tokenizer_object=tokenizer_backend,
+        blank_token="<|blank|>",
         bos_token="<|sot|>",
         eos_token="<|eot|>",
         pad_token="<|pad|>",
         unk_token="<|unk|>",
-        blank_token="<|blank|>",
         detect_lang_token="<|lang|>",
         bem_lang_token="<|bem|>",
         eng_lang_token="<|eng|>",

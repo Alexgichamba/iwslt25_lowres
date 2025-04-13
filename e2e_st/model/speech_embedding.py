@@ -18,9 +18,9 @@ class WhisperSpeechEmbedding(AbstractSpeechEmbedding):
     "Robust Speech Recognition via Large-Scale Weak Supervision" by Radford et al. 
     https://cdn.openai.com/papers/whisper.pdf
     """
-    def __init__(self, in_channels:int, out_channels: int, strides: List[int] = [1, 2]):
-        self.conv1 = nn.Conv1d(in_channels=in_channels, out_channels=out_channels, kernel_size=3, stride=strides[0], padding=1)
-        self.conv2 = nn.Conv1d(in_channels=out_channels, out_channels=out_channels, kernel_size=3, stride=strides[1], padding=1)
+    def __init__(self, in_channels:int, out_channels: int, dtype:torch.dtype, device:torch.device, strides: List[int] = [1, 2]):
+        self.conv1 = nn.Conv1d(in_channels=in_channels, out_channels=out_channels, kernel_size=3, stride=strides[0], padding=1, dtype=dtype, device=device)
+        self.conv2 = nn.Conv1d(in_channels=out_channels, out_channels=out_channels, kernel_size=3, stride=strides[1], padding=1, dtype=dtype, device=device)
         self.gelu1 = nn.GELU()
         self.gelu2 = nn.GELU()
         
@@ -57,10 +57,10 @@ class SpeechTransformerSpeechEmbedding(AbstractSpeechEmbedding):
     "Speech-Transformer: A No-Recurrence Sequence-to-Sequence Model for Speech Recognition" by Dong et al.
     https://ieeexplore.ieee.org/document/8462506
     """
-    def __init__(self, out_channels: int):
+    def __init__(self, out_channels: int, dtype: torch.dtype, device: torch.device):
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels=1, out_channels=out_channels, kernel_size=3, stride=2, padding=1)
-        self.conv2 = nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel_size=3, stride=2, padding=1)
+        self.conv1 = nn.Conv2d(in_channels=1, out_channels=out_channels, kernel_size=3, stride=2, padding=1, dtype=dtype, device=device)
+        self.conv2 = nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel_size=3, stride=2, padding=1, dtype=dtype, device=device)
         self.gelu1 = nn.GELU()
         self.gelu2 = nn.GELU()
         self.linear = nn.Linear(in_features=out_channels, out_features=out_channels)
@@ -71,10 +71,10 @@ class SpeechTransformerSpeechEmbedding(AbstractSpeechEmbedding):
     def forward(self, speech: torch.Tensor, speech_lengths: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args: 
-            speech: torch.Tensor of shape (batch_size, num_frames, num_features)
+            speech: torch.Tensor of shape (batch_size, num_features, num_frames)
             (Optional) speech_lengths: torch.Tensor of shape (batch_size)
         Returns:
-            embedding: torch.Tensor of shape (batch_size, num_frames//4, out_channels)
+            embedding: torch.Tensor of shape (batch_size, out_channels, num_frames//4)
             adjusted_lengths: torch.Tensor of shape (batch_size) with updated sequence lengths
         """
         speech = speech.unsqueeze(1)  # Add channel dimension

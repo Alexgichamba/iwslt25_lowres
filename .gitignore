@@ -6,3 +6,7 @@ tokenizer_config.json
 tokenizer.json
 iwslt25_uncased_*/README.md
 data
+corpora
+wandb
+output
+build

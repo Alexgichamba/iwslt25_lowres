@@ -7,6 +7,16 @@ class AbstractAudioPreprocessor(ABC):
     def __call__(self, waveform_path: str) -> torch.Tensor:
         pass
 
+    @abstractmethod
+    def get_audio_length(self, audio_path: str) -> float:
+        """
+        Args:
+            audio_path, str: Path to the audio file.
+        Returns:
+            length, float: The length of the audio in seconds
+        """
+        pass
+
 class LogMelSpec(AbstractAudioPreprocessor):
     "Compute log mel spectrogram from waveform"
     def __init__(self, n_mels: int, hop_length: int, n_fft: int, sample_rate: int):
@@ -42,6 +52,13 @@ class LogMelSpec(AbstractAudioPreprocessor):
         # convert the amplitude to decibels
         mel_spectrogram = self.feature_to_db(mel_spectrogram)
         return mel_spectrogram.squeeze(0)
+    
+    def get_audio_length(self, audio_path):
+        """Get audio length in seconds without computing the full spectrogram"""
+        
+        # Load audio metadata only (faster than loading the full audio)
+        info = torchaudio.info(audio_path)
+        return info.num_frames / info.sample_rate
 
 class RawAudio(AbstractAudioPreprocessor):
     "Load raw audio waveform"
@@ -62,3 +79,10 @@ class RawAudio(AbstractAudioPreprocessor):
             print(f"Resampling from {sample_rate} to {self.sample_rate}")
             waveform = torchaudio.transforms.Resample(sample_rate, self.sample_rate)(waveform)
         return waveform.squeeze(0)
+    
+    def get_audio_length(self, audio_path):
+        """Get audio length in seconds without computing the full spectrogram"""
+        
+        # Load audio metadata only (faster than loading the full audio)
+        info = torchaudio.info(audio_path)
+        return info.num_frames / info.sample_rate

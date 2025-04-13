@@ -10,7 +10,8 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
-from torch.amp import autocast, GradScaler
+from torch.amp import GradScaler
+from torch import autocast
 from e2e_st.model.transformer import Transformer
 from e2e_st.audio.audio_preprocessor import LogMelSpec
 from e2e_st.text.text_preprocessor import TranslationPreprocessor
@@ -20,6 +21,7 @@ from e2e_st.inference import GreedyDecoding
 from e2e_st import metrics
 from e2e_st.utils.schedulers import CosineAnnealingWarmupRestarts, WarmupReduceLROnPlateau
 from e2e_st.model.model_config import load_or_create_model
+from e2e_st.utils.samplers import DurationBucketSampler
 
 @dataclass
 class SpecConfig:
@@ -101,12 +103,17 @@ class STDataset(Dataset):
         input_tokens = torch.tensor(input_tokens, dtype=torch.long)
         st_target_tokens = torch.tensor(st_target_tokens, dtype=torch.long)
         asr_target_tokens = torch.tensor(asr_target_tokens, dtype=torch.long)
+
+        source_language = getattr(self.tokenizer, f"{source_language}_lang_token_id")
+        target_language = getattr(self.tokenizer, f"{target_language}_lang_token_id")
         
         return {
             "mel": mel,
             "input_tokens": input_tokens,
             "st_target_tokens": st_target_tokens,
-            'asr_target_tokens': asr_target_tokens
+            'asr_target_tokens': asr_target_tokens,
+            "source_language": source_language,
+            "target_language": target_language
         }
 
 
@@ -119,15 +126,23 @@ class STDataset(Dataset):
         input_tokens = [item["input_tokens"] for item in batch] # (n_tokens,)
         st_target_tokens = [item["st_target_tokens"] for item in batch] # (n_tokens,)
         asr_target_tokens = [item["asr_target_tokens"] for item in batch] # (n_tokens,)
+        source_languages = [torch.tensor(item["source_language"], dtype=torch.long) for item in batch] # (1,)
+        target_languages = [torch.tensor(item["target_language"], dtype=torch.long) for item in batch] # (1,)
 
         speech_lengths = torch.tensor([mel.size(0) for mel in mels], dtype=torch.long)
         asr_text_lengths = torch.tensor([len(tokens) for tokens in asr_target_tokens], dtype=torch.long)
-        
+
         # Pad token sequences
         mels = pad_sequence(mels, batch_first=True, padding_value=0) # (B, T, n_mels)
         input_tokens = pad_sequence(input_tokens, batch_first=True, padding_value=self.tokenizer.pad_token_id)
         st_target_tokens = pad_sequence(st_target_tokens, batch_first=True, padding_value=self.tokenizer.pad_token_id)
         asr_target_tokens = pad_sequence(asr_target_tokens, batch_first=True, padding_value=self.tokenizer.pad_token_id)
+
+        # transpose mels to (B, n_mels, T)
+        mels = mels.permute(0, 2, 1)
+
+        source_languages = torch.stack(source_languages, dim=0) # (B, 1)
+        target_languages = torch.stack(target_languages, dim=0) # (B, 1)
         
         return {
             "mel": mels,
@@ -135,7 +150,9 @@ class STDataset(Dataset):
             "text_lengths": asr_text_lengths,
             "input_tokens": input_tokens,
             "st_target_tokens": st_target_tokens,
-            "asr_target_tokens": asr_target_tokens
+            "asr_target_tokens": asr_target_tokens,
+            "source_languages": source_languages,
+            "target_languages": target_languages
         }
 
 class STTrainer:
@@ -182,21 +199,22 @@ class STTrainer:
         self.device = device
         self.ctcloss_weight = ctcloss_weight
 
-        self.ctcloss = torch.nn.CTCLoss(blank=tokenizer.pad_token_id)
+        self.ctcloss = torch.nn.CTCLoss(blank=tokenizer.blank_token_id, zero_infinity=True)
         self.cross_entropy_loss = torch.nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id, 
                                                             label_smoothing=label_smoothing)
 
         self.max_decoding_length = max_decoding_length
         
         # Mixed precision settings
-        self.use_mixed_precision = use_mixed_precision and device.startswith("cuda")
-        self.scaler = GradScaler(device="cuda") if self.use_mixed_precision else None
+        self.use_mixed_precision = use_mixed_precision
+        self.scaler = GradScaler()
 
         # decoding for validation
         self.decoding =  GreedyDecoding(
                                         tokenizer=tokenizer,
                                         ctc_beam_size=2
                                         )
+        print(f"Using device: {device}")
         
     def train_step(self, batch):
         """
@@ -224,19 +242,25 @@ class STTrainer:
         text_lengths = batch["text_lengths"].to(self.device)
         
         # Mixed precision forward pass
-        with autocast(enabled=self.use_mixed_precision, device_type="cuda"):
+        with autocast(device_type="cuda", enabled=self.use_mixed_precision):
             # forward pass through the model
-            dec_logits, ctc_logits, enc_attn_weights, dec_self_attn_weights, dec_cross_attn_weights = self.model(mel,
-                                                                                                                input_tokens,
-                                                                                                                speech_lengths
-                                                                                                                )
+            enc_output, enc_lengths, enc_attn_weights = self.model.embed_speech(mel, speech_lengths)
+            # decoder
+            dec_logits, dec_self_attn_weights, dec_cross_attn_weights = self.model.decode(x=input_tokens,
+                                                                                        enc_output=enc_output,
+                                                                                        enc_output_lengths=enc_lengths,
+                                                                                        padding_idx=self.model.padding_idx,
+                                                                                        average_attn_weights=self.model.average_attn_weights
+                                                                                        )
+            # CTC head
+            ctc_logits = self.model.compute_ctc_logits(enc_output)
             
             ctc_logits = F.log_softmax(ctc_logits, dim=-1) # (N, T, vocab_size)
             ctc_logits = ctc_logits.permute(1, 0, 2) # (T, N, vocab_size)
             # Compute CTC loss
             ctc_loss = self.ctcloss(log_probs=ctc_logits,
                                     targets=asr_target_tokens,
-                                    input_lengths=speech_lengths,
+                                    input_lengths=enc_lengths,
                                     target_lengths=text_lengths)
             
             dec_logits = dec_logits.view(-1, dec_logits.size(-1)) # (N*T, vocab_size)
@@ -259,9 +283,9 @@ class STTrainer:
         if isinstance(self.lr_scheduler, CosineAnnealingWarmupRestarts):
             self.lr_scheduler.step()
             
-        return loss.item()
+        return loss.item(), ce_loss.item(), ctc_loss.item()
     
-    def validate(self, dataloader):
+    def validate(self, dataloader, epoch=None, output_dir=None):
         """
         Validate the model on validation data using batched processing.
         
@@ -269,6 +293,10 @@ class STTrainer:
         ----------
         dataloader : DataLoader
             DataLoader for validation data
+        epoch : int, optional
+            Current epoch number (for file naming)
+        output_dir : str, optional
+            Directory to save prediction files
                 
         Returns
         -------
@@ -284,21 +312,24 @@ class STTrainer:
         all_asr_targets = []
         
         with torch.no_grad():
-            for batch in dataloader:
+            # Add tqdm progress bar for validation
+            for batch in tqdm(dataloader, desc="Validating"):
                 mel = batch["mel"].to(self.device)
                 st_target_tokens = batch["st_target_tokens"].to(self.device)
                 asr_target_tokens = batch["asr_target_tokens"]  # Keep on CPU
                 speech_lengths = batch["speech_lengths"].to(self.device)
+                # get target languages
+                target_lang_ids = batch["target_languages"].to(self.device)
                 
                 batch_size = mel.size(0)
                 
                 # Mixed precision evaluation
                 with autocast(enabled=self.use_mixed_precision, device_type="cuda"):
-                    results = self.decoding(model=self.model,
-                                        target_lang_id=self.target_lang_id,
-                                        speech_features=mel,
-                                        speech_lengths=speech_lengths,
-                                        max_length=self.max_decoding_length)
+                    results = self.decoding.decode(model=self.model,
+                                    target_lang_ids=target_lang_ids,
+                                    speech_features=mel,
+                                    speech_lengths=speech_lengths,
+                                    max_length=self.max_decoding_length)
                 
                 # Process target sequences properly (batch as a whole)
                 for i in range(batch_size):
@@ -320,6 +351,30 @@ class STTrainer:
                 # Free memory after processing each batch
                 del mel, st_target_tokens, speech_lengths, results, batch
                 torch.cuda.empty_cache()
+        
+        # Write predictions to files if epoch and output_dir are provided
+        if epoch is not None and output_dir is not None:
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Create prediction files for this epoch with side-by-side format
+            st_file = os.path.join(output_dir, f"epoch_{epoch}_st_results.txt")
+            asr_file = os.path.join(output_dir, f"epoch_{epoch}_asr_results.txt")
+            
+            # Write ST predictions and targets side by side
+            with open(st_file, 'w', encoding='utf-8') as f:
+                f.write("TARGET || PREDICTION\n")
+                f.write("-" * 80 + "\n")  # Separator line
+                for target, pred in zip(all_st_targets, all_st_preds):
+                    f.write(f"{target} || {pred}\n")
+                    
+            # Write ASR predictions and targets side by side
+            with open(asr_file, 'w', encoding='utf-8') as f:
+                f.write("TARGET || PREDICTION\n")
+                f.write("-" * 80 + "\n")  # Separator line
+                for target, pred in zip(all_asr_targets, all_asr_preds):
+                    f.write(f"{target} || {pred}\n")
+                    
+            print(f"Saved validation results for epoch {epoch} to {output_dir}")
         
         corpus_metrics = metrics.compute_metrics(
             st_target=all_st_targets,
@@ -348,6 +403,8 @@ class STTrainer:
             Interval for logging training progress
         use_wandb : bool
             Whether to log metrics to Weights & Biases
+        output_dir : str
+            Directory to save model checkpoints and validation predictions
             
         Returns
         -------
@@ -362,6 +419,10 @@ class STTrainer:
             "chrf": []
         }
         
+        # Create a subdirectory for validation predictions
+        preds_dir = os.path.join(output_dir, "val_predictions")
+        os.makedirs(preds_dir, exist_ok=True)
+        
         # Print mixed precision status
         if self.use_mixed_precision:
             print("Using mixed precision training (FP16)")
@@ -372,13 +433,14 @@ class STTrainer:
             # Training
             epoch_loss = 0
             for i, batch in enumerate(tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")):
-                loss = self.train_step(batch)
+                loss, ce_loss, ctc_loss = self.train_step(batch)
                 epoch_loss += loss
                 
                 # Log batch-level metrics
                 if use_wandb:
                     wandb.log({
-                        "train/step": epoch * len(train_dataloader) + i,
+                        "train/ctc_loss": ctc_loss,
+                        "train/ce_loss": ce_loss,
                         "train/loss": loss,
                         "train/LR": self.optimizer.param_groups[0]['lr'] if self.lr_scheduler else self.optimizer.param_groups[0]['lr']
                     })
@@ -393,19 +455,18 @@ class STTrainer:
             avg_train_loss = epoch_loss / len(train_dataloader)
             history["train_loss"].append(avg_train_loss)
             
-            # Validation
-            val_metrics = self.validate(val_dataloader)
+            # Validation - pass the epoch number and predictions directory
+            val_metrics = self.validate(val_dataloader, epoch=epoch+1, output_dir=preds_dir)
             history["wer"].append(val_metrics["wer"])
             history["cer"].append(val_metrics["cer"])
             history["bleu"].append(val_metrics["bleu"])
             history["chrf"].append(val_metrics["chrf"])
             
             print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {avg_train_loss:.4f}, "
-                  f"Validation WER: {val_metrics['wer']:.4f}, "
-                  f"Validation CER: {val_metrics['cer']:.4f}, "
-                  f"Validation BLEU: {val_metrics['bleu']:.4f}, "
-                  f"Validation chrF: {val_metrics['chrf']:.4f}")
-            # Log validation metrics
+                f"Validation WER: {val_metrics['wer']:.4f}, "
+                f"Validation CER: {val_metrics['cer']:.4f}, "
+                f"Validation BLEU: {val_metrics['bleu']:.4f}, "
+                f"Validation chrF: {val_metrics['chrf']:.4f}")
             
             # Log epoch-level metrics
             if use_wandb:
@@ -416,6 +477,16 @@ class STTrainer:
                     "val/bleu": val_metrics["bleu"],
                     "val/chrf": val_metrics["chrf"]
                 })
+                
+                # Log validation prediction files as artifacts if wandb is enabled
+                val_preds_artifact = wandb.Artifact(
+                    name=f"val-predictions-{epoch+1}", 
+                    type="predictions"
+                )
+                val_preds_artifact.add_file(os.path.join(preds_dir, f"epoch_{epoch+1}_st_results.txt"))
+                val_preds_artifact.add_file(os.path.join(preds_dir, f"epoch_{epoch+1}_asr_results.txt"))
+                wandb.log_artifact(val_preds_artifact)
+                
             save_epoch = epoch + 1
             os.makedirs(output_dir, exist_ok=True)
             checkpoint_path = os.path.join(output_dir, f"checkpoint_{save_epoch}.pt")
@@ -453,8 +524,8 @@ def train_from_config(config, model, tokenizer):
     # Data paths
     data_root = config['data']['root']
     audio_base_path = config['data']['audio_root']
-    train_json = f"{data_root}/train/train.json"
-    val_json = f"{data_root}/val/val.json"
+    train_json = f"{data_root}/train.json"
+    val_json = f"{data_root}/valid.json"
     
     # Task settings
     language_pairs = config['language_pairs']
@@ -463,9 +534,12 @@ def train_from_config(config, model, tokenizer):
   
     
     # Training settings
-    batch_size = config['training']['batch_size']
+    validation_batch_size = config['training']['validation_batch_size']
+    batch_duration = config['training']['batch_duration']
+    bucket_length_multiplier = config['training'].get('bucket_length_multiplier', 1.5)
     num_epochs = config['training']['num_epochs']
     learning_rate = config['training']['learning_rate']
+    cycle_length = config['training'].get('cycle_length', 1)
     weight_decay = config['training'].get('weight_decay', 0.001)
     device = config['training']['device']
     
@@ -491,7 +565,7 @@ def train_from_config(config, model, tokenizer):
                 'model': config['model']['name'],
                 'source_languages': source_languages,
                 'target_languages': target_languages,
-                'batch_size': batch_size,
+                'batch_duration': batch_duration,
                 'learning_rate': learning_rate,
                 'tokenizer': config['text'].get('tokenizer', "alexgichamba/iwslt25_lowres_uncased_4096"),
                 'ff_type': config['model'].get('ff_type', 'linear'),
@@ -519,32 +593,43 @@ def train_from_config(config, model, tokenizer):
     case_standardization = config['text'].get('case_standardization', None)
     
     # Create datasets
-    train_dataset = STDataset(dataset_json=train_json,
-                              audio_base_path=audio_base_path,
-                              tokenizer=tokenizer,
-                              spec_config=spec_config,
-                              case_standardization=case_standardization
-                              )
+    train_dataset = STDataset(
+                            dataset_json=train_json,
+                            tokenizer=tokenizer,
+                            spec_config=spec_config,
+                            case_standardization=case_standardization
+                            )
+                              
     
+    # Create samplers
+    train_sampler = DurationBucketSampler(
+        dataset=train_dataset,
+        target_duration=batch_duration,
+        bucket_length_multiplier=bucket_length_multiplier,
+        shuffle=True,
+        shuffle_buckets=True
+    )
+
+    val_dataset = STDataset(
+                            dataset_json=val_json,
+                            tokenizer=tokenizer,
+                            spec_config=spec_config,
+                            case_standardization=case_standardization
+                        )
+    
+    # Create DataLoader with batch_sampler instead of batch_size
     train_dataloader = DataLoader(
         train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
+        batch_sampler=train_sampler,  # Use batch_sampler instead of batch_size
         collate_fn=train_dataset.collate_fn,
         num_workers=num_workers,
         pin_memory=True if device=="cuda" else False
     )
-    
-    val_dataset = STDataset(dataset_json=val_json,
-                              audio_base_path=audio_base_path,
-                              tokenizer=tokenizer,
-                              spec_config=spec_config,
-                              case_standardization=case_standardization
-                              )
+                              
     
     val_dataloader = DataLoader(
         val_dataset,
-        batch_size=batch_size,
+        batch_size=validation_batch_size,
         shuffle=False,
         collate_fn=val_dataset.collate_fn,
         num_workers=num_workers,
@@ -555,8 +640,7 @@ def train_from_config(config, model, tokenizer):
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=learning_rate,
-        betas=(0.9, 0.999),
-        weight_decay=0.01
+        weight_decay=weight_decay,
     )
 
     # Create learning rate scheduler from config
@@ -564,7 +648,7 @@ def train_from_config(config, model, tokenizer):
     if scheduler_name == 'CosineAnnealingWarmupRestarts':
         lr_scheduler = CosineAnnealingWarmupRestarts(
             optimizer,
-            first_cycle_steps=len(train_dataloader),
+            first_cycle_steps=int(len(train_dataloader) * cycle_length),
             max_lr=learning_rate,
             min_lr=config['training'].get('min_lr', 1e-6),
             warmup_steps=config['training'].get('warmup_steps', 100),
@@ -596,6 +680,16 @@ def train_from_config(config, model, tokenizer):
         ctcloss_weight=config['training'].get('ctcloss_weight', 0.0),
         max_decoding_length=config['training'].get('max_decoding_length', 256)
     )
+
+    print(f"Using duration-based batching with target duration: {batch_duration}s")
+    print(f"Number of training batches: {len(train_sampler)}")
+    # Training batch utterance stats
+    batch_sizes = [len(batch) for batch in train_sampler.all_batches]
+    print(f"Training batches: {len(batch_sizes)}")
+    print(f"  - Min utterances per batch: {min(batch_sizes)}")
+    print(f"  - Max utterances per batch: {max(batch_sizes)}")
+    print(f"  - Avg utterances per batch: {sum(batch_sizes)/len(batch_sizes):.1f}")
+
     # Train the model
     history = trainer.train(
         train_dataloader=train_dataloader,

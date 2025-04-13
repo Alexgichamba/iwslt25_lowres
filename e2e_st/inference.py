@@ -16,7 +16,7 @@ class AbstractDecoding(ABC):
     @abstractmethod
     def decode(self,
                 model: Transformer,
-               target_lang_id: int,
+               target_lang_ids: int,
                speech_features: torch.Tensor,
                speech_lengths: torch.Tensor,
                max_length: int
@@ -28,15 +28,14 @@ class GreedyDecoding(AbstractDecoding):
         super().__init__(tokenizer, ctc_beam_size)
         self.ctc_beam_size = ctc_beam_size
         self.ctc_decoder = cuda_ctc_decoder(
-            vocab_list=list(tokenizer.vocab.keys()),
+            tokens=list(tokenizer.vocab.keys()),
             beam_size=ctc_beam_size,
-            blank_index=tokenizer.blank_token_id,
             nbest=1
         )
 
     def decode(self,
                model: Transformer,
-               target_lang_id: int,
+               target_lang_ids: int,
                speech_features: torch.Tensor,
                speech_lengths: Optional[torch.Tensor] = None,
                max_length: int = 256
@@ -46,7 +45,7 @@ class GreedyDecoding(AbstractDecoding):
         
         Args:
             model: Transformer model
-            target_lang_id: Target language ID token
+            target_lang_ids: Target language IDs tensor of shape (batch_size,)
             speech_features: Input speech features tensor of shape (batch_size, seq_len, n_mels)
             speech_lengths (Optional): Lengths of the input speech features tensor of shape (batch_size,)
             max_length: Maximum sequence length for generation
@@ -73,17 +72,19 @@ class GreedyDecoding(AbstractDecoding):
             best_hypothesis = []
             for result in ctc_decode_results:
                 tokens_tensor = torch.tensor(result[0].tokens, dtype=torch.long, device=device)
+                print(f"Decoded tokens: {self.tokenizer.decode(tokens_tensor.tolist())}")
                 best_hypothesis.append(tokens_tensor)
             best_hypothesis_tokens = pad_sequence(best_hypothesis, batch_first=True, padding_value=self.tokenizer.pad_token_id)
             # Construct initial prompt as tensors of [<detect_lang_token>, <target_lang_token>, <transcript_hypothesis_tokens>, <start_token>]
             batch_size = best_hypothesis_tokens.size(0)
             prompt_tokens = torch.full((batch_size, 1), self.tokenizer.detect_lang_token_id, device=device) # (batch_size, 1)
-            # concatenate the target language token
-            prompt_tokens = torch.cat((prompt_tokens, torch.full((batch_size, 1), target_lang_id, device=device)), dim=1) # (batch_size, 2)
+            # concatenate the target language tokens from target_lang_ids
+            target_lang_tokens = target_lang_ids.unsqueeze(1)  # (batch_size, 1)
+            prompt_tokens = torch.cat((prompt_tokens, target_lang_tokens), dim=1)  # (batch_size, 2)
             # concatenate the transcript hypothesis tokens
             prompt_tokens = torch.cat((prompt_tokens, best_hypothesis_tokens), dim=1)
             # concatenate the start token
-            prompt_tokens = torch.cat((prompt_tokens, torch.full((batch_size, 1), self.tokenizer.start_token_id, device=device)), dim=1)
+            prompt_tokens = torch.cat((prompt_tokens, torch.full((batch_size, 1), self.tokenizer.bos_token_id, device=device)), dim=1)
 
             # Get the max generation length
             max_gen_length = max_length - prompt_tokens.size(1)
@@ -101,7 +102,7 @@ class GreedyDecoding(AbstractDecoding):
                 # Forward pass through the model for next token prediction
                 logits, _, _ = model.decode(
                     x=curr_output,
-                    encoder_output=encoder_outputs,
+                    enc_output=encoder_outputs,
                     enc_output_lengths=encoder_output_lengths,
                     padding_idx=self.tokenizer.pad_token_id
                 )
