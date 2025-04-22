@@ -21,7 +21,8 @@ model:
 # Tokenizer path
 tokenizer: "alexgichamba/iwslt25_uncased_4096"
 
-# Task configuration  
+# Task configuration
+task: st  
 language_pairs:
   - source: bem
     target: eng

@@ -1,11 +1,11 @@
 # Model configuration
 model:
-  name: "small"
-  d_model: 768
-  n_heads: 12
-  d_ff: 3072
-  n_enc_layers: 12
-  n_dec_layers: 12
+  name: "base"
+  d_model: 512
+  n_heads: 8
+  d_ff: 2048
+  n_enc_layers: 6
+  n_dec_layers: 6
   enc_attn_dropout: 0.1
   dec_attn_dropout: 0.1
   speech_embedding_type: "whisper"
@@ -20,13 +20,9 @@ model:
 # Tokenizer path
 tokenizer: "alexgichamba/iwslt25_uncased_4096"
 
-# Task configuration  
-task: st  
-language_pairs:
-  - source: bem
-    target: eng
-  - source: fon
-    target: fra
+# Task configuration
+task: asr 
+language: bem
 
 # Audio configuration
 audio:
@@ -43,8 +39,8 @@ text:
 training:
   batch_duration: 1800
   bucket_length_multiplier: 1.6
-  validation_batch_size: 64
-  num_epochs: 5
+  validation_batch_size: 8
+  num_epochs: 20
   learning_rate: 2.0e-4
   weight_decay: 0.001
   device: "cuda"
@@ -52,11 +48,12 @@ training:
   num_workers: 4
   scheduler: "CosineAnnealingWarmupRestarts"
   warmup_steps: 100
-  cycle_length: 2 # epochs
+  cycle_length: 4 # epochs
   min_lr: 1.0e-6
   label_smoothing: 0.1
-  ctcloss_weight: 0.3
-  max_decoding_length: 256
+  ctcloss_weight: 0.05
+  max_decoding_length: 128
+  use_sdpa: false
 
 # Data configuration
 data:
@@ -68,8 +65,8 @@ logging:
   log_interval: 100
   wandb: true
   wandb_project: "e2e_st"
-  wandb_run_name: "bem_eng_small_4096"
+  wandb_run_name: "bem_asr_small_4096"
 
 # Output configuration
 output:
-  dir: "output/bem_eng_small_4096"
+  dir: "output/bem_asr_small_4096"
