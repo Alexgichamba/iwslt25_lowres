@@ -1,3 +1,4 @@
+# e2e_st/text/train_tokenizer.py
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer

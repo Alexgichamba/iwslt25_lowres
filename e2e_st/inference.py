@@ -1,3 +1,5 @@
+# e2e_st/inference.py
+
 import torch
 import torch.nn.functional as F
 from abc import ABC, abstractmethod

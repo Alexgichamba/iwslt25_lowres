@@ -1,3 +1,4 @@
+# e2e_st/model/speech_embedding.py
 from abc import ABC, abstractmethod
 import torch
 import torch.nn as nn

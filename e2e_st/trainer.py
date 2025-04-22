@@ -1,3 +1,4 @@
+# e2e_st/trainer.py
 import os
 import yaml
 import argparse

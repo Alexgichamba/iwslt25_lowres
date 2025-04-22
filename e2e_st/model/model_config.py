@@ -1,3 +1,5 @@
+# e2e_st/model/model_config.py
+
 from dataclasses import dataclass, fields
 from typing import Literal, Optional, Dict, Any
 import torch
